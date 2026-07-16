@@ -140,7 +140,7 @@ SOURCE_GROUPS = {
         '5sing音乐'
     ],
     '国外音乐': [
-        'SoundCloud(for wya😍)',
+        'SoundCloud(for XuiS😍)',
         'Apple Music(有问题，需登录)'
     ]
 }
@@ -151,7 +151,7 @@ SOURCE_INTERNAL = {
     '酷我音乐(普通无损,推荐)': 'KuwoMusicClient',
     '酷狗音乐(普通无损)': 'KugouMusicClient',
     '咪咕音乐(普通音质,推荐)': 'MiguMusicClient',
-    'SoundCloud(for wya😍)': 'SoundCloudMusicClient',
+    'SoundCloud(for XuiS😍)': 'SoundCloudMusicClient',
     'Apple Music(有问题，需登录)': 'AppleMusicClient',
     '5sing音乐': 'FiveSingMusicClient',
 }
