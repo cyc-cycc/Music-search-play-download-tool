@@ -36,7 +36,7 @@ jobs:
       run: |
         # 1. 创建一个临时文件夹，用于存放即将打包进 DMG 的 .app
         mkdir -p dmg_staging
-        cp -R "dist/MusicDownloader.app" dmg_staging/
+        cp -R "dist/Music-spd-tool_macos-arm64.app" dmg_staging/
         
         # 2. 使用 hdiutil 创建压缩的只读 DMG
         # -volname: 挂载时显示的名称
