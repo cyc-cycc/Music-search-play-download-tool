@@ -1,9 +1,7 @@
 name: Build macOS App
 
 on:
-  push:                   # 当推送代码到仓库时自动触发
-    branches: [ main ]    # 只在 main 分支触发（如果你用 master，改成 master）
-  workflow_dispatch:      # 也允许你手动在网页上点击运行
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,7 +14,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'   # 选择 Python 版本（3.9~3.11 均可）
+        python-version: '3.13.14'   # 选择 Python 版本（3.9~3.11 均可）
 
     - name: Install system dependencies
       run: |
@@ -32,7 +30,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --windowed --name "MusicDownloader" musicdlgui.py
+        pyinstaller --windowed --name "Music-spd-tool_macos-arm64" musicdlgui.py
     
     - name: Create DMG (using native hdiutil)
       run: |
@@ -45,10 +43,10 @@ jobs:
         # -srcfolder: 源文件夹
         # -ov: 覆盖已有文件
         # -format UDZO: 压缩的只读格式（标准分发格式）
-        hdiutil create -volname "MusicDownloader" -srcfolder dmg_staging -ov -format UDZO "dist/MusicDownloader.dmg"
+        hdiutil create -volname "Music-spd-tool_macos-arm64" -srcfolder dmg_staging -ov -format UDZO "dist/Music-spd-tool_macos-arm64.dmg"
     
     - name: Upload artifact (now upload the .dmg file!)
       uses: actions/upload-artifact@v4
       with:
         name: MusicDownloader-macOS
-        path: dist/MusicDownloader.dmg   # 重点：这里改成了 .dmg 文件！
+        path: dist/Music-spd-tool_macos-arm64.dmg   # 重点：这里改成了 .dmg 文件！
