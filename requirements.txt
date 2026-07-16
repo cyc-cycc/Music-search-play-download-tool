@@ -1,0 +1,6 @@
+mutagen>=1.45.0
+requests>=2.25.0
+filetype>=1.0.7
+PyQt5>=5.15.0
+python-vlc>=3.0.0
+musicdl>=2.0.0
