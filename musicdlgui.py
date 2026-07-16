@@ -37,11 +37,12 @@ from PyQt5.QtWidgets import (
 
 # 获取 VLC 便携版的完整路径（仅在需要时添加 DLL 路径）
 vlc_path = os.path.join(os.path.dirname(__file__))
-try:
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(vlc_path)
-except Exception:
-    pass
+if sys.platform == 'win32':
+    try:
+        if hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(vlc_path)
+    except Exception:
+        pass
 import vlc
 
 from musicdl import musicdl
@@ -103,6 +104,17 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__)) if not getattr(sys, 'frozen
 LOG_DIR = os.path.join(APP_DIR, 'logs')
 LOG_FILE = os.path.join(LOG_DIR, 'musicdl_gui.log')
 DEFAULT_SAVE_DIR = os.path.join(APP_DIR, 'download')
+
+if sys.platform == 'darwin':
+    try:
+        os.makedirs(DEFAULT_SAVE_DIR, exist_ok=True)
+        test_file = os.path.join(DEFAULT_SAVE_DIR, '.write_test')
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+    except OSError:
+        DEFAULT_SAVE_DIR = os.path.join(os.path.expanduser("~"), "Music", "MusicDL")
+        os.makedirs(DEFAULT_SAVE_DIR, exist_ok=True)
 
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -1132,7 +1144,7 @@ class MusicdlGUI(QWidget):
     def get_style_sheet(self):
         return """
         QWidget {
-            font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", "Segoe UI", sans-serif;
             font-size: 12px;
         }
         QWidget#musicdlGUI {
@@ -2363,8 +2375,20 @@ class MusicdlGUI(QWidget):
 
 
 if __name__ == '__main__':
+    # macOS 兼容：切换当前工作目录到可写位置（防止 musicdl 创建只读目录）
+    if sys.platform == 'darwin':
+        try:
+            test_file = os.path.join(os.getcwd(), '.write_test')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+        except OSError:
+            os.chdir(os.path.expanduser("~"))
+    
     app = QApplication(sys.argv)
     font = QFont("Microsoft YaHei", 10)
+    if sys.platform == 'darwin':
+        font.setFamily("PingFang SC")
     app.setFont(font)
     gui = MusicdlGUI()
     gui.show()
