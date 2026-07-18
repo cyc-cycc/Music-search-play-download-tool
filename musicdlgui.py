@@ -243,7 +243,6 @@ def get_cover_url(song_info: Dict) -> Optional[str]:
             return val
     return None
 
-
 def download_cover_image(url: str, request_kwargs: Dict, max_size: int = 5 * 1024 * 1024) -> Tuple[Optional[bytes], Optional[str]]:
     """保留原接口，内部调用通用函数（无 session 时使用 requests.get）"""
     return _download_image_data(url, request_kwargs, max_size, session=None)
@@ -372,11 +371,9 @@ class PlayerWrapper(QObject):
         self._current_media = None
         self.durationChanged.emit(0)
 
-
 # ==================== 封面下载（Runnable 复用通用函数） ====================
 class CoverRunnableSignals(QObject):
     finished = pyqtSignal(object)
-
 
 class CoverRunnable(QRunnable):
     def __init__(self, url: str, request_kwargs: Dict, task_id: int, session: Optional[requests.Session] = None, max_size: int = 5 * 1024 * 1024):
@@ -471,7 +468,6 @@ class SearchThread(QThread):
         except Exception as e:
             raise e
 
-
 # ==================== 歌单解析线程 ====================
 class PlaylistParseThread(QThread):
     parse_started = pyqtSignal()
@@ -523,7 +519,6 @@ class PlaylistParseThread(QThread):
         except Exception as e:
             logger.error(f"歌单解析线程异常: {e}", exc_info=True)
             self.parse_error.emit(str(e))
-
 
 # ==================== 下载线程 ====================
 class DownloadThread(QThread):
@@ -748,7 +743,6 @@ class DownloadThread(QThread):
             except Exception:
                 pass
 
-
 # ==================== 主界面 ====================
 class MusicdlGUI(QWidget):
     def __init__(self):
@@ -809,7 +803,7 @@ class MusicdlGUI(QWidget):
         title_layout.addWidget(icon_label)
 
         # 标题文字
-        self.title_label = QLabel("音乐搜索、播放、下载器 V3.1.0 BY cYy")
+        self.title_label = QLabel("⚡音乐搜索、播放、下载器 V3.1.2 BY cYy")
         self.title_label.setStyleSheet("color: #2C3E50; font-weight: bold;")
         title_layout.addWidget(self.title_label)
 
@@ -1455,6 +1449,15 @@ class MusicdlGUI(QWidget):
         self.player.mediaStatusChanged.connect(self.handle_media_status)
         self.player.positionChanged.connect(self.update_lyric_display)
 
+    def _show_warning(self, title: str, text: str):
+        """静音警告弹窗（无图标，无声音）"""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.NoIcon)
+        msg.setWindowTitle(title)
+        msg.setText(text)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
+
     # ==================== 封面显示 ====================
     def _on_cover_loaded(self, payload):
         try:
@@ -1748,7 +1751,7 @@ class MusicdlGUI(QWidget):
     # -------------------- 搜索/停止 --------------------
     def on_search_or_stop(self):
         if self.is_parsing:
-            QMessageBox.warning(self, '提示', '正在解析歌单，请稍后再试')
+            self._show_warning( '提示', '正在解析歌单，请稍后再试')
             return
         if not self.search_in_progress:
             self.start_search()
@@ -1757,7 +1760,7 @@ class MusicdlGUI(QWidget):
 
     def start_search(self):
         if self.is_parsing:
-            QMessageBox.warning(self, '提示', '正在解析歌单，请稍后再试')
+            self._show_warning( '提示', '正在解析歌单，请稍后再试')
             return
         selected_sources = []
         for cb in self.check_boxes:
@@ -1956,10 +1959,10 @@ class MusicdlGUI(QWidget):
     # -------------------- 歌单解析（异步） --------------------
     def parse_playlist(self):
         if self.search_in_progress:
-            QMessageBox.warning(self, '提示', '正在搜索中，请稍后再试')
+            self._show_warning( '提示', '正在搜索中，请稍后再试')
             return
         if self.is_downloading:
-            QMessageBox.warning(self, '提示', '正在下载中，请稍后再试')
+            self._show_warning( '提示', '正在下载中，请稍后再试')
             return
         if self.is_parsing:
             self.stop_parse()
