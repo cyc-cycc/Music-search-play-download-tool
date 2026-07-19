@@ -1,6 +1,25 @@
 # -*- coding: utf-8 -*-
 import os
 import sys
+def get_vlc_plugin_path():
+    """返回打包后内置 VLC 插件目录，若不存在则返回 None"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后的临时目录
+        base_path = sys._MEIPASS
+        plugin_path = os.path.join(base_path, 'vlc', 'plugins')
+        if os.path.exists(plugin_path):
+            return plugin_path
+    return None
+
+# 设置环境变量，供 python-vlc 使用
+vlc_plugins = get_vlc_plugin_path()
+if vlc_plugins:
+    os.environ['VLC_PLUGIN_PATH'] = vlc_plugins
+    # 如果还需要指定 libvlc 路径，可以添加 DYLD_LIBRARY_PATH
+    lib_path = os.path.dirname(vlc_plugins)  # 上级目录包含 libvlc.dylib
+    if os.path.exists(os.path.join(lib_path, 'libvlc.dylib')):
+        dyld_path = os.environ.get('DYLD_LIBRARY_PATH', '')
+        os.environ['DYLD_LIBRARY_PATH'] = lib_path + (':' + dyld_path if dyld_path else '')
 import re
 from enum import IntEnum
 import logging
@@ -13,27 +32,41 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Callable, Tuple
 from logging.handlers import RotatingFileHandler
 
-import mutagen
 from mutagen.id3 import ID3, APIC
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.flac import FLAC, Picture
+import librosa
+import numpy as np
+import sounddevice as sd
 
 import requests
 import filetype
 from PyQt5 import QtCore
-from PyQt5.QtGui import QIcon, QFont, QPixmap, QColor, QMouseEvent
+from PyQt5.QtGui import (
+    QIcon, QFont, QPixmap, QColor, QMouseEvent,
+    QPainter, QBrush, QPen, QPalette, QDesktopServices
+)
 from PyQt5.QtCore import (
     QThread, pyqtSignal, Qt, QTimer, QObject,
-    QRunnable, QThreadPool, pyqtSlot, QPoint, QRect
+    QRunnable, QThreadPool, pyqtSlot, QPoint, QRect,
+    QRectF, QUrl
 )
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QCheckBox, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QGridLayout,
     QProgressBar, QMenu, QMessageBox, QAbstractItemView,
     QSpinBox, QHeaderView, QFileDialog, QComboBox, QHBoxLayout,
-    QVBoxLayout, QGroupBox, QSizePolicy, QSlider,
-    QListWidget, QListWidgetItem  # 移除了未使用的 QSizeGrip
+    QVBoxLayout, QGroupBox, QSizePolicy, QSlider, QListWidget,
+    QListWidgetItem, QProgressDialog, QMainWindow, QFrame,
+    QSplitter
 )
+
+import matplotlib
+matplotlib.use('Qt5Agg')
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 
 # 获取 VLC 便携版的完整路径（仅在需要时添加 DLL 路径）
 vlc_path = os.path.join(os.path.dirname(__file__))
@@ -101,26 +134,20 @@ class ClickableSlider(QSlider):
 
 # ==================== 日志配置 ====================
 APP_DIR = os.path.dirname(os.path.abspath(__file__)) if not getattr(sys, 'frozen', False) else os.path.dirname(sys.executable)
-LOG_DIR = os.path.join(APP_DIR, 'logs')
-LOG_FILE = os.path.join(LOG_DIR, 'musicdl_gui.log')
-DEFAULT_SAVE_DIR = os.path.join(APP_DIR, 'download')
-
 if sys.platform == 'darwin':
-    try:
-        os.makedirs(DEFAULT_SAVE_DIR, exist_ok=True)
-        test_file = os.path.join(DEFAULT_SAVE_DIR, '.write_test')
-        with open(test_file, 'w') as f:
-            f.write('test')
-        os.remove(test_file)
-    except OSError:
-        DEFAULT_SAVE_DIR = os.path.join(os.path.expanduser("~"), "Music", "MusicDL")
-        os.makedirs(DEFAULT_SAVE_DIR, exist_ok=True)
+    DATA_DIR = os.path.join(os.path.expanduser("~"), "Documents", "musicspdgui-cyy")
+else:
+    DATA_DIR = APP_DIR
+LOG_DIR = os.path.join(DATA_DIR, 'logs')
+LOG_FILE = os.path.join(LOG_DIR, 'musicdl_gui.log')
+DEFAULT_SAVE_DIR = os.path.join(DATA_DIR, 'download')
 
 try:
+    os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(DEFAULT_SAVE_DIR, exist_ok=True)
 except Exception as e:
-    print(f"警告：无法创建目录：{e}")
+    print(f"警告：无法创建数据目录：{e}")
 
 logger = logging.getLogger('MusicdlGUI')
 logger.setLevel(logging.DEBUG)
@@ -276,8 +303,12 @@ class PlayerWrapper(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        vlc_log = os.path.join(APP_DIR, 'vlc.log')
-        self._instance = vlc.Instance('--verbose=0', f'--logfile={vlc_log}')
+        vlc_log = os.path.join(DATA_DIR, 'vlc.log')
+        vlc_args = ['--verbose=0', f'--logfile={vlc_log}']
+        plugin_path = os.environ.get('VLC_PLUGIN_PATH')
+        if plugin_path:
+            vlc_args.append(f'--plugin-path={plugin_path}')
+        self._instance = vlc.Instance(*vlc_args)
         self._player = self._instance.media_player_new()
         self._timer = QTimer()
         self._timer.timeout.connect(self._update_position)
@@ -743,6 +774,609 @@ class DownloadThread(QThread):
             except Exception:
                 pass
 
+# ==================== 可视化窗口（基于 music seer） =======================
+class AudioVisualizer(QMainWindow):
+    def __init__(self, audio_path: str = None, lyric_path: str = None,
+                 cover_path: str = None, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle("🎵 音频可视化")
+        self.setGeometry(100, 100, 800, 700)
+        self.setMinimumSize(700, 700)
+
+        # 状态变量
+        self.audio_data = None          # 单声道float32
+        self.sample_rate = None
+        self.read_index = 0
+        self.lock = threading.Lock()
+        self.paused = False
+        self.volume = 1.0
+        self.stream = None
+        self.lyrics = []                # [(time, text), ...]
+        self.current_lyric_index = -1
+        self.total_time = 0
+        self.is_dragging = False
+
+        # 频谱参数
+        self.fft_bins = 45
+        self.ring_bins = 48
+        self.y_max = 1.1
+        self.smooth_alpha = 0.4
+        self.smooth_bar_vals = None
+        self.smooth_ring_vals = None
+
+        # 预计算 Mel 频谱
+        self.norm_stft = None
+        self.frame_count = 0
+        self.frames_per_second = 0.0
+
+        # 封面路径
+        self.cover_path = cover_path
+
+        # 窗口拖动
+        self.drag_pos = QPoint()
+        self.dragging = False
+
+        # 信号与定时器
+        self.signals = UpdateSignals()
+        self.signals.update_ui.connect(self._update_ui)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.signals.update_ui.emit)
+        self.timer.start(30)
+
+        self._init_ui()
+
+        # 如果传入了音频路径，直接加载
+        if audio_path and os.path.exists(audio_path):
+            self.load_audio(audio_path, lyric_path, cover_path)
+
+    # ---------- UI 初始化 ----------
+    def _init_ui(self):
+        central = QFrame()
+        central.setStyleSheet("background: #F5F7FA; border-radius: 8px;")
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 标题栏（可拖动）
+        title_bar = QWidget()
+        title_bar.setFixedHeight(40)
+        title_bar.setStyleSheet(
+            "background: #E8F0FE; border-bottom: 1px solid #BDC3C7;"
+            "border-top-left-radius: 8px; border-top-right-radius: 8px;"
+        )
+        title_bar.mousePressEvent = self._title_mouse_press
+        title_bar.mouseMoveEvent = self._title_mouse_move
+        title_bar.mouseReleaseEvent = self._title_mouse_release
+
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(10, 0, 10, 0)
+        title_layout.setSpacing(5)
+
+        title_label = QLabel("🎵 音频可视化")
+        title_label.setStyleSheet("color: #2C3E50; font-weight: bold; font-size: 14px;")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+
+        for symbol, slot in [("—", self.showMinimized), ("□", self._toggle_maximize), ("✕", self.close)]:
+            btn = QPushButton(symbol)
+            btn.setFixedSize(32, 32)
+            btn.setStyleSheet(
+                "QPushButton { background: transparent; color: #2C3E50; border: none; border-radius: 4px; font-size: 16px; }"
+                "QPushButton:hover { background: #D5D8DC; }"
+            )
+            if symbol == "✕":
+                btn.setStyleSheet(btn.styleSheet() + "QPushButton:hover { background: #E74C3C; color: white; }")
+            btn.clicked.connect(slot)
+            title_layout.addWidget(btn)
+            if symbol == "□":
+                self.max_btn = btn
+
+        main_layout.addWidget(title_bar)
+
+        # 内容区域（含封面背景）
+        self.content_widget = QWidget()
+        self.content_widget.setStyleSheet(
+            "background: transparent; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;"
+        )
+        content_layout = QVBoxLayout(self.content_widget)
+        content_layout.setContentsMargins(10, 10, 10, 10)
+        content_layout.setSpacing(10)
+
+        # 封面背景标签
+        self.bg_label = QLabel(self.content_widget)
+        self.bg_label.setScaledContents(True)
+        self.bg_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.bg_label.hide()
+        self.bg_label.setGeometry(self.content_widget.rect())
+
+        # 主分割器
+        splitter = QSplitter(Qt.Horizontal)
+        content_layout.addWidget(splitter, 1)
+
+        # 左侧面板（歌词 + 条形图）
+        left_widget = QWidget()
+        left_widget.setStyleSheet("background: rgba(255,255,255,0.8); border-radius: 8px;")
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(5, 5, 5, 5)
+        left_layout.setSpacing(5)
+
+        self.song_title_label = QLabel("未选择歌曲")
+        self.song_title_label.setAlignment(Qt.AlignCenter)
+        self.song_title_label.setFixedHeight(35)
+        self.song_title_label.setStyleSheet(
+            "background: transparent; color: #2C3E50; font-weight: bold; font-size: 16px; padding: 5px;"
+        )
+        left_layout.addWidget(self.song_title_label)
+
+        self.lyric_list = QListWidget()
+        self.lyric_list.setSelectionMode(QListWidget.NoSelection)
+        self.lyric_list.setWordWrap(True)
+        self.lyric_list.setFont(QFont("Microsoft YaHei", 11))
+        self.lyric_list.setStyleSheet(
+            "QListWidget { background: transparent; color: #2C3E50; border: none; }"
+            "QListWidget::item { padding: 2px 5px; }"
+        )
+        left_layout.addWidget(self.lyric_list, 1)
+
+        # 条形图
+        self.bar_fig = Figure(figsize=(6, 3), dpi=100, facecolor='none')
+        self.bar_ax = self.bar_fig.add_subplot(111)
+        self.bar_ax.set_facecolor('none')
+        self.bar_ax.set_ylim(0, self.y_max)
+        self.bar_ax.set_xticks([])
+        self.bar_ax.set_yticks([])
+        for spine in self.bar_ax.spines.values():
+            spine.set_visible(False)
+        self.bar_rects = self.bar_ax.bar(range(self.fft_bins), np.zeros(self.fft_bins),
+                                         width=0.8, color='#4A90D9', edgecolor='none')
+        self.bar_fig.tight_layout(pad=0)
+        self.bar_canvas = FigureCanvas(self.bar_fig)
+        self.bar_canvas.setStyleSheet("background: transparent; border: none;")
+        left_layout.addWidget(self.bar_canvas, 1)
+        splitter.addWidget(left_widget)
+
+        # 右侧面板（环形图）
+        right_widget = QWidget()
+        right_widget.setStyleSheet("background: rgba(255,255,255,0.8); border-radius: 8px;")
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(5, 5, 5, 5)
+        right_layout.setSpacing(5)
+
+        self.ring_fig = Figure(figsize=(4, 4), dpi=100, facecolor='none')
+        self.ring_ax = self.ring_fig.add_subplot(111, projection='polar')
+        self.ring_ax.set_facecolor('none')
+        self.ring_ax.set_ylim(0, self.y_max)
+        self.ring_ax.set_xticks([])
+        self.ring_ax.set_yticks([])
+        self.ring_ax.spines['polar'].set_visible(False)
+        self.ring_ax.grid(False)
+        self.ring_angles = np.linspace(0, 2 * np.pi, self.ring_bins, endpoint=False)
+        self.ring_lines = []
+        self.ring_dots = []
+        for angle in self.ring_angles:
+            line, = self.ring_ax.plot([angle, angle], [0, 0], color='#4A90D9', linewidth=2, alpha=0.8)
+            self.ring_lines.append(line)
+            dot = self.ring_ax.scatter(angle, 0, s=10, color='#4A90D9', alpha=0.9, zorder=5)
+            self.ring_dots.append(dot)
+        self.ring_fig.tight_layout(pad=0)
+        self.ring_canvas = FigureCanvas(self.ring_fig)
+        self.ring_canvas.setStyleSheet("background: transparent; border: none;")
+        right_layout.addWidget(self.ring_canvas)
+        splitter.addWidget(right_widget)
+        splitter.setSizes([550, 350])
+
+        # 底部控制栏
+        control = QWidget()
+        control.setStyleSheet("background: rgba(255,255,255,0.8); border-radius: 8px; padding: 5px;")
+        control_layout = QHBoxLayout(control)
+        control_layout.setContentsMargins(10, 5, 10, 5)
+        control_layout.setSpacing(10)
+
+        # 保留选择按钮（备用）
+        self.select_btn = self._make_btn("📂 选择文件", self._select_file)
+        control_layout.addWidget(self.select_btn)
+
+        self.pause_btn = self._make_btn("⏸ 暂停", self._toggle_pause)
+        self.pause_btn.setEnabled(False)
+        control_layout.addWidget(self.pause_btn)
+
+        self.progress_slider = QSlider(Qt.Horizontal)
+        self.progress_slider.setRange(0, 100)
+        self.progress_slider.setValue(0)
+        self.progress_slider.sliderPressed.connect(self._progress_press)
+        self.progress_slider.sliderReleased.connect(self._progress_release)
+        self.progress_slider.valueChanged.connect(self._progress_changed)
+        self.progress_slider.setStyleSheet(
+            "QSlider::groove:horizontal { height: 6px; background: #D5D8DC; border-radius: 3px; }"
+            "QSlider::handle:horizontal { background: #4A90D9; width: 16px; margin: -5px 0; border-radius: 8px; }"
+            "QSlider::sub-page:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4A90D9, stop:1 #7B2FFC); border-radius: 3px; }"
+        )
+        control_layout.addWidget(self.progress_slider, 1)
+
+        self.time_label = QLabel("00:00 / 00:00")
+        self.time_label.setStyleSheet("color: #2C3E50; font-size: 13px;")
+        control_layout.addWidget(self.time_label)
+
+        control_layout.addWidget(QLabel("🔊"))
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 30)
+        self.volume_slider.setValue(15)
+        self.volume_slider.setFixedWidth(80)
+        self.volume_slider.valueChanged.connect(self._volume_change)
+        self.volume_slider.setStyleSheet(
+            "QSlider::groove:horizontal { height: 4px; background: #D5D8DC; border-radius: 2px; }"
+            "QSlider::handle:horizontal { background: #4A90D9; width: 12px; margin: -4px 0; border-radius: 6px; }"
+            "QSlider::sub-page:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4A90D9, stop:1 #7B2FFC); border-radius: 2px; }"
+        )
+        control_layout.addWidget(self.volume_slider)
+
+        content_layout.addWidget(control, 0)
+        main_layout.addWidget(self.content_widget)
+
+        # 平滑缓存初始化
+        self.smooth_bar_vals = np.zeros(self.fft_bins)
+        self.smooth_ring_vals = np.zeros(self.ring_bins)
+
+    def _make_btn(self, text, slot):
+        btn = QPushButton(text)
+        btn.setFixedHeight(32)
+        btn.clicked.connect(slot)
+        btn.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.8); color: #2C3E50; border: 1px solid #BDC3C7; border-radius: 4px; padding: 5px 12px; font-weight: bold; }"
+            "QPushButton:hover { background: #E8F0FE; border-color: #4A90D9; }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.5); }"
+            "QPushButton:disabled { color: #BDC3C7; border-color: #D5D8DC; }"
+        )
+        return btn
+
+    # ---------- 窗口控制 ----------
+    def _title_mouse_press(self, e):
+        if e.button() == Qt.LeftButton:
+            self.drag_pos = e.globalPos()
+            self.dragging = True
+            e.accept()
+
+    def _title_mouse_move(self, e):
+        if self.dragging:
+            self.move(self.pos() + e.globalPos() - self.drag_pos)
+            self.drag_pos = e.globalPos()
+            e.accept()
+
+    def _title_mouse_release(self, e):
+        if e.button() == Qt.LeftButton:
+            self.dragging = False
+            e.accept()
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+            self.max_btn.setText("□")
+        else:
+            self.showMaximized()
+            self.max_btn.setText("❐")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, 'bg_label'):
+            self.bg_label.setGeometry(self.content_widget.rect())
+            self.bg_label.lower()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, 'bg_label') and self.cover_path:
+            self.bg_label.setGeometry(self.content_widget.rect())
+            self.bg_label.lower()
+
+    # ---------- 封面背景 ----------
+    def _set_cover_background(self, image_path):
+        if image_path and os.path.exists(image_path):
+            pixmap = QPixmap(image_path)
+            if not pixmap.isNull():
+                self.bg_label.setPixmap(pixmap)
+                self.bg_label.show()
+                self.bg_label.setGeometry(self.content_widget.rect())
+                return
+        self.bg_label.hide()
+        self.bg_label.clear()
+
+    # ---------- 加载外部文件 ----------
+    def load_audio(self, audio_path, lyric_path=None, cover_path=None):
+        """供外部调用的加载方法"""
+        if not os.path.exists(audio_path):
+            return
+        try:
+            # 加载音频
+            data, sr = librosa.load(audio_path, sr=None, mono=True)
+            self.audio_data = data.astype(np.float32)
+            self.sample_rate = sr
+            self.read_index = 0
+            self.paused = False
+            self.pause_btn.setText("⏸ 暂停")
+            self.pause_btn.setEnabled(True)
+
+            # 预计算 Mel 频谱
+            hop_length = 512
+            n_fft = 2048
+            D = librosa.stft(self.audio_data, n_fft=n_fft, hop_length=hop_length)
+            mag = np.abs(D)
+            mel_basis = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=self.fft_bins)
+            mel_spec = np.dot(mel_basis, mag)
+            log_mel = np.log1p(mel_spec)
+            col_max = np.max(log_mel, axis=0)
+            col_max[col_max == 0] = 1.0
+            self.norm_stft = (log_mel / col_max[np.newaxis, :]).clip(0.0, 1.0).astype(np.float32)
+            self.frame_count = self.norm_stft.shape[1]
+            self.frames_per_second = sr / hop_length
+
+            # 歌词
+            if lyric_path and os.path.exists(lyric_path):
+                self.lyrics = self._parse_lrc(lyric_path)
+            else:
+                # 尝试同目录下的同名 lrc
+                default_lrc = os.path.splitext(audio_path)[0] + ".lrc"
+                if os.path.exists(default_lrc):
+                    self.lyrics = self._parse_lrc(default_lrc)
+                else:
+                    self.lyrics = []
+            self.lyric_list.clear()
+            for _, text in self.lyrics:
+                item = QListWidgetItem(text)
+                item.setForeground(QColor(44, 62, 80))
+                self.lyric_list.addItem(item)
+            if not self.lyrics:
+                self.lyric_list.addItem("（无歌词）")
+            self.current_lyric_index = -1
+
+            # 歌曲名
+            self.song_title_label.setText(os.path.splitext(os.path.basename(audio_path))[0])
+
+            # 封面
+            if cover_path and os.path.exists(cover_path):
+                self.cover_path = cover_path
+            else:
+                # 尝试同目录下 _cover.* 文件
+                covers = glob.glob(os.path.splitext(audio_path)[0] + "_cover.*")
+                self.cover_path = covers[0] if covers else None
+            self._set_cover_background(self.cover_path)
+
+            # 音频流
+            if self.stream:
+                self.stream.stop()
+                self.stream.close()
+            self.stream = sd.OutputStream(
+                samplerate=sr, channels=1, callback=self._audio_callback,
+                blocksize=1024, latency='low'
+            )
+            self.stream.start()
+
+            self.total_time = len(self.audio_data) / sr
+            self.progress_slider.setValue(0)
+            self.time_label.setText(f"00:00 / {self._format_time(self.total_time)}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"加载音频失败: {e}")
+            self.pause_btn.setEnabled(False)
+            self.norm_stft = None
+
+    def _parse_lrc(self, lrc_path):
+        """解析歌词文件"""
+        lyrics = []
+        pattern = re.compile(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)')
+        try:
+            with open(lrc_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    m = pattern.match(line.strip())
+                    if m:
+                        minute, sec, ms, text = m.groups()
+                        total = int(minute) * 60 + int(sec) + int(ms) / 1000.0
+                        if text.strip():
+                            lyrics.append((total, text.strip()))
+        except Exception:
+            pass
+        return lyrics
+
+    # ---------- 文件选择（保留备用） ----------
+    def _select_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择音频文件", "",
+            "Audio Files (*.mp3 *.wav *.flac *.ogg *.m4a);;All Files (*.*)"
+        )
+        if path:
+            self.load_audio(path)
+
+    # ---------- 音频回调 ----------
+    def _audio_callback(self, outdata, frames, time, status):
+        with self.lock:
+            if self.paused or self.audio_data is None:
+                outdata.fill(0)
+                return
+            start = self.read_index
+            end = start + frames
+            data_len = len(self.audio_data)
+            if start >= data_len:
+                outdata.fill(0)
+                return
+            avail = min(frames, data_len - start)
+            if avail < frames:
+                outdata[:avail, 0] = self.audio_data[start:start + avail] * self.volume
+                outdata[avail:, 0] = 0
+                self.read_index = data_len
+            else:
+                outdata[:, 0] = self.audio_data[start:start + frames] * self.volume
+                self.read_index += frames
+
+    # ---------- UI 更新 ----------
+    def _update_ui(self):
+        if self.audio_data is None:
+            return
+        if self.is_dragging:
+            return
+
+        with self.lock:
+            idx = self.read_index
+        total = len(self.audio_data)
+
+        if total > 0:
+            progress = (idx / total) * 100
+            if not self.is_dragging:
+                self.progress_slider.setValue(int(progress))
+
+        cur_time = idx / self.sample_rate
+        self.time_label.setText(f"{self._format_time(cur_time)} / {self._format_time(self.total_time)}")
+
+        self._update_lyric(cur_time)
+
+        if idx < total and self.norm_stft is not None:
+            self._update_spectrum(idx)
+
+        if idx >= total and total > 0:
+            self._playback_finished()
+
+    def _update_lyric(self, cur_time):
+        if not self.lyrics:
+            return
+        new_idx = -1
+        for i, (t, _) in enumerate(self.lyrics):
+            if t <= cur_time:
+                new_idx = i
+            else:
+                break
+        if new_idx == self.current_lyric_index:
+            return
+
+        # 清除旧高亮
+        if self.current_lyric_index != -1:
+            old = self.lyric_list.item(self.current_lyric_index)
+            if old:
+                old.setBackground(QColor(0, 0, 0, 0))
+                old.setForeground(QColor(44, 62, 80))
+                f = old.font()
+                f.setBold(False)
+                old.setFont(f)
+
+        # 高亮新行
+        if new_idx != -1 and new_idx < self.lyric_list.count():
+            new = self.lyric_list.item(new_idx)
+            if new:
+                new.setBackground(QColor(74, 144, 217, 80))
+                new.setForeground(QColor(0, 0, 0))
+                f = new.font()
+                f.setBold(True)
+                new.setFont(f)
+                self.lyric_list.scrollToItem(new, QListWidget.PositionAtCenter)
+
+        self.current_lyric_index = new_idx
+
+    def _update_spectrum(self, idx):
+        if self.norm_stft is None or self.frame_count == 0:
+            return
+
+        frame = int((idx / self.sample_rate) * self.frames_per_second)
+        frame = max(0, min(frame, self.frame_count - 1))
+        raw = self.norm_stft[:, frame]
+
+        # 平滑
+        alpha = self.smooth_alpha
+        self.smooth_bar_vals = alpha * raw + (1 - alpha) * self.smooth_bar_vals
+        smoothed_bar = self.smooth_bar_vals
+
+        # 环形采样
+        ring_idx = np.linspace(0, self.fft_bins - 1, self.ring_bins, dtype=int)
+        raw_ring = raw[ring_idx]
+        self.smooth_ring_vals = alpha * raw_ring + (1 - alpha) * self.smooth_ring_vals
+        smoothed_ring = self.smooth_ring_vals
+
+        # 更新条形图
+        cmap = plt.cm.viridis
+        norm = Normalize(vmin=0, vmax=1)
+        colors = cmap(norm(smoothed_bar))
+        for rect, val, color in zip(self.bar_rects, smoothed_bar, colors):
+            rect.set_height(val)
+            rect.set_color(color)
+        self.bar_ax.set_ylim(0, self.y_max)
+        self.bar_canvas.draw_idle()
+
+        # 更新环形图
+        ring_colors = cmap(norm(smoothed_ring))
+        radii = 0.2 + 0.8 * smoothed_ring
+        for i, (angle, radius, color, val) in enumerate(
+                zip(self.ring_angles, radii, ring_colors, smoothed_ring)):
+            self.ring_lines[i].set_data([angle, angle], [0, radius])
+            self.ring_lines[i].set_color(color)
+            self.ring_dots[i].set_offsets([[angle, radius]])
+            self.ring_dots[i].set_sizes([20 + 80 * val])
+            self.ring_dots[i].set_color(color)
+        self.ring_ax.set_ylim(0, self.y_max)
+        self.ring_canvas.draw_idle()
+
+    def _playback_finished(self):
+        if self.stream:
+            self.stream.stop()
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText("⏸ 暂停")
+        self.progress_slider.setValue(100)
+        self.time_label.setText(f"{self._format_time(self.total_time)} / {self._format_time(self.total_time)}")
+
+    # ---------- 控制槽 ----------
+    def _toggle_pause(self):
+        if self.audio_data is None:
+            return
+        with self.lock:
+            self.paused = not self.paused
+        self.pause_btn.setText("▶ 继续" if self.paused else "⏸ 暂停")
+        if not self.paused and self.stream and not self.stream.active:
+            self.stream.start()
+
+    def _volume_change(self, val):
+        self.volume = val / 100.0
+
+    def _progress_press(self):
+        if self.audio_data is None:
+            return
+        self.is_dragging = True
+        with self.lock:
+            self.paused = True
+        self.pause_btn.setText("▶ 继续")
+
+    def _progress_release(self):
+        if self.audio_data is None:
+            return
+        self.is_dragging = False
+        with self.lock:
+            self.paused = False
+        self.pause_btn.setText("⏸ 暂停")
+        if self.stream and not self.stream.active:
+            self.stream.start()
+        self._progress_changed(self.progress_slider.value())
+
+    def _progress_changed(self, val):
+        if self.audio_data is None:
+            return
+        pos = val / 100.0
+        new_idx = int(pos * len(self.audio_data))
+        with self.lock:
+            self.read_index = new_idx
+        cur = new_idx / self.sample_rate
+        self.time_label.setText(f"{self._format_time(cur)} / {self._format_time(self.total_time)}")
+
+    @staticmethod
+    def _format_time(sec):
+        return f"{int(sec // 60):02d}:{int(sec % 60):02d}"
+
+    def closeEvent(self, e):
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
+        super().closeEvent(e)
+
+# 辅助信号类（用于跨线程更新UI）
+class UpdateSignals(QObject):
+    update_ui = pyqtSignal()
+
 # ==================== 主界面 ====================
 class MusicdlGUI(QWidget):
     def __init__(self):
@@ -803,7 +1437,7 @@ class MusicdlGUI(QWidget):
         title_layout.addWidget(icon_label)
 
         # 标题文字
-        self.title_label = QLabel("⚡音乐搜索、播放、下载器 V3.1.2 BY cYy")
+        self.title_label = QLabel("⚡音乐搜索、播放、下载器 V4.0.0 BY cYy")
         self.title_label.setStyleSheet("color: #2C3E50; font-weight: bold;")
         title_layout.addWidget(self.title_label)
 
@@ -947,11 +1581,15 @@ class MusicdlGUI(QWidget):
         self.btn_default.clicked.connect(lambda: self._set_save_path(DEFAULT_SAVE_DIR))
         path_layout.addWidget(self.btn_default, 0, 5, 1, 1)
 
-        self.btn_desktop = QPushButton('桌面')
+        self.btn_desktop = QPushButton('💻桌面')
         self.btn_desktop.clicked.connect(lambda: self._set_save_path(
             os.path.join(os.path.expanduser("~"), "Desktop")
         ))
         path_layout.addWidget(self.btn_desktop, 0, 6, 1, 1)
+
+        self.btn_open_folder = QPushButton('📂 打开文件夹')
+        self.btn_open_folder.clicked.connect(self.open_download_folder)
+        path_layout.addWidget(self.btn_open_folder, 0, 7, 1, 1)
 
         path_layout.addWidget(QLabel('文件名格式：'), 1, 0, 1, 1)
         self.format_combo = QComboBox()
@@ -1104,6 +1742,12 @@ class MusicdlGUI(QWidget):
         self.combo_playmode.currentIndexChanged.connect(self.on_playmode_changed)
         volume_layout.addWidget(self.combo_playmode)
         control_layout.addLayout(volume_layout)
+
+        self.btn_visualize = QPushButton("🎨 可视化")
+        self.btn_visualize.setObjectName("visualizeButton")
+        self.btn_visualize.setFixedWidth(80)
+        self.btn_visualize.setToolTip("打开当前歌曲的可视化窗口")
+        volume_layout.addWidget(self.btn_visualize)
 
         play_layout.addLayout(control_layout, 1)
         content_layout.addWidget(play_group_box)
@@ -1394,6 +2038,14 @@ class MusicdlGUI(QWidget):
             background-color: rgba(200, 225, 245, 220);  /* 淡蓝色半透明，调整最后一位透明度 */
             border-radius: 8px;
         }
+        QPushButton#visualizeButton {
+            background-color: #8E44AD;
+            color: white;
+            font-weight: bold;
+            border: none;
+            border-radius: 4px;
+        }
+        QPushButton#visualizeButton:hover { background-color: #6C3483; }
         """
 
     def _init_signals(self):
@@ -1412,6 +2064,7 @@ class MusicdlGUI(QWidget):
         self.lineedit_keyword.returnPressed.connect(self.on_search_or_stop)
         self.btn_prev.clicked.connect(self.play_prev)
         self.btn_next.clicked.connect(self.play_next)
+        self.btn_visualize.clicked.connect(self.show_visualization)
 
     def _init_state(self):
         self.search_in_progress = False
@@ -1438,7 +2091,7 @@ class MusicdlGUI(QWidget):
         # 用于自定义窗口拖动的变量
         self.drag_pos = QPoint()
         self.dragging = False
-        # 移除未使用的 self.border_width
+        self._vis_download_thread = None
 
     def _init_player(self):
         self.player = PlayerWrapper()
@@ -1457,6 +2110,118 @@ class MusicdlGUI(QWidget):
         msg.setText(text)
         msg.setStandardButtons(QMessageBox.Ok)
         msg.exec_()
+
+#================== 显示可视化窗口 ==================
+    def show_visualization(self):
+        if self.current_play_index < 0 or not self.playlist:
+            QMessageBox.information(self, "提示", "请先播放一首歌曲")
+            return
+
+        song_info = self.playlist[self.current_play_index]
+        # 查找音频文件（使用歌手-歌曲名格式）
+        base_name = self._get_base_name_for_song(song_info, "{歌手}-{歌曲名}")
+        ext = song_info.get('ext', 'mp3')
+        save_dir = self.path_edit.text().strip()
+        pattern = os.path.join(save_dir, f"{base_name}*{ext}")
+        matches = glob.glob(pattern)
+        audio_file = None
+        for f in matches:
+            if '_cover' not in f and '.lrc' not in f:
+                audio_file = f
+                break
+        if not audio_file and matches:
+            audio_file = matches[0]
+
+        if audio_file and os.path.exists(audio_file):
+            self._open_visualization(audio_file, song_info)
+        else:
+            reply = QMessageBox.question(self, "文件未下载",
+                                         "当前歌曲尚未下载到本地，是否立即下载？",
+                                         QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self._download_and_visualize(song_info)
+
+    def _open_visualization(self, audio_file, song_info):
+        """打开可视化窗口（使用 AudioVisualizer）"""
+        # 暂停主播放器（可选）
+        if self.player.state() == PlayerState.PlayingState:
+            self.player.pause()
+        base, _ = os.path.splitext(audio_file)
+        lyric_file = base + '.lrc'
+        cover_file = None
+        cover_pattern = base + '_cover.*'
+        covers = glob.glob(cover_pattern)
+        if covers:
+            cover_file = covers[0]
+
+        self.vis_window = AudioVisualizer(
+            audio_file,
+            lyric_file if os.path.exists(lyric_file) else None,
+            cover_file if cover_file and os.path.exists(cover_file) else None,
+            parent=self
+        )
+        self.vis_window.show()
+
+    def _download_and_visualize(self, song_info):
+        save_dir = self.path_edit.text().strip()
+        # 强制使用歌手-歌曲名格式
+        fmt = "{歌手}-{歌曲名}"
+        # 强制下载歌词和封面
+        dl_lyric = True
+        dl_cover = True
+
+        # 清理旧线程
+        if hasattr(self, '_vis_download_thread') and self._vis_download_thread is not None:
+            if self._vis_download_thread.isRunning():
+                self._vis_download_thread.stop()
+                self._vis_download_thread.wait()
+            self._vis_download_thread = None
+
+        progress = QProgressDialog("正在下载歌曲...", "取消", 0, 100, self)
+        progress.setWindowTitle("下载进度")
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        self._vis_download_thread = DownloadThread(
+            song_info,
+            self._get_request_kwargs_for_source,
+            save_dir,
+            fmt,
+            dl_lyric,
+            dl_cover
+        )
+        self._vis_download_thread.progress.connect(progress.setValue)
+        self._vis_download_thread.finished.connect(
+            lambda name, singer, path: self._on_vis_download_finished(name, singer, path, progress)
+        )
+        self._vis_download_thread.error.connect(
+            lambda err: self._on_vis_download_error(err, progress)
+        )
+        progress.canceled.connect(self._vis_download_thread.stop)
+
+        self._vis_download_thread.start()
+        self.label_stats.setText("⏳ 正在下载当前歌曲以用于可视化...")
+        self.btn_visualize.setEnabled(False)
+
+    def _on_vis_download_finished(self, song_name, singers, file_path, progress):
+        progress.setValue(100)
+        progress.close()
+        self.btn_visualize.setEnabled(True)
+        self.label_stats.setText(f"下载完成：{song_name} - {singers}")
+        song_info = self.playlist[self.current_play_index] if self.current_play_index >= 0 else None
+        if song_info:
+            self._open_visualization(file_path, song_info)
+        else:
+            QMessageBox.warning(self, "错误", "无法获取歌曲信息")
+        self._vis_download_thread = None
+
+    def _on_vis_download_error(self, error_msg, progress):
+        progress.close()
+        self.btn_visualize.setEnabled(True)
+        QMessageBox.critical(self, "下载失败", f"下载可视化所需文件失败：{error_msg}")
+        self._vis_download_thread = None
 
     # ==================== 封面显示 ====================
     def _on_cover_loaded(self, payload):
@@ -1493,13 +2258,26 @@ class MusicdlGUI(QWidget):
 
     # ==================== 播放控制 ====================
     def toggle_playback(self):
-        if self.player.state() == PlayerState.PlayingState:
+        # 如果播放列表为空，提示用户
+        if not self.playlist and self.player.state() == PlayerState.StoppedState:
+            QMessageBox.information(self, "提示", "播放列表为空，请先选择歌曲播放。")
+            return
+
+        state = self.player.state()
+        if state == PlayerState.PlayingState:
             self.player.pause()
-        else:
+        elif state == PlayerState.PausedState:
+            self.player.play(volume=self.slider_volume.value())
+        else:  # StoppedState
+            # 如果列表为空，不做任何事（上面已经拦截了）
+            if not self.playlist:
+                return
+            self.player.setPosition(0)
             self.player.play(volume=self.slider_volume.value())
 
     def stop_playback(self):
         self.player.stop()
+        self.player.setPosition(0)
         self.slider_position.setValue(0)
         self.label_time.setText("00:00 / 00:00")
         self.now_playing_label.setText("未播放")
@@ -1508,6 +2286,11 @@ class MusicdlGUI(QWidget):
         self.cover_label.setPixmap(QPixmap())
         self._cover_task_id += 1
         self._last_cover_runnable = None
+
+        # 新增：清空播放列表和当前索引
+        self.playlist.clear()
+        self.current_play_index = -1
+        # 可选：也清空主窗口歌词显示（已在 clear_lyric_display 中）
 
     def set_position(self, pos):
         self.player.setPosition(pos)
@@ -1738,6 +2521,20 @@ class MusicdlGUI(QWidget):
         if path:
             self._set_save_path(path)
 
+    def open_download_folder(self):
+        """打开当前保存路径的文件夹（如果不存在则创建）"""
+        folder = self.path_edit.text().strip()
+        if not folder:
+            QMessageBox.warning(self, '警告', '保存路径为空')
+            return
+        if not os.path.exists(folder):
+            try:
+                os.makedirs(folder)
+            except Exception as e:
+                QMessageBox.critical(self, '错误', f'无法创建目录：{e}')
+                return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
     # -------------------- 获取文件名模板 --------------------
     def _get_filename_template(self) -> str:
         fmt = self.format_combo.currentText()
@@ -1747,6 +2544,25 @@ class MusicdlGUI(QWidget):
                 template = '{歌手}-{歌曲名}'
             return template
         return fmt
+
+    def _get_base_name_for_song(self, song_info: Dict, fmt: str = None) -> str:
+        if fmt is None:
+            fmt = self._get_filename_template()
+        song_name = song_info.get('song_name', '')
+        singers = song_info.get('singers', '')
+        if fmt == "歌曲名":
+            base = song_name
+        elif fmt == "歌手-歌曲名":
+            base = f"{singers}-{song_name}"
+        elif fmt == "歌曲名-歌手":
+            base = f"{song_name}-{singers}"
+        else:  # 自定义
+            base = fmt
+            base = base.replace("{歌手}", singers)
+            base = base.replace("{歌曲名}", song_name)
+            base = base.replace("{专辑}", song_info.get('album', ''))
+            base = base.replace("{时长}", song_info.get('duration', ''))
+        return sanitize_filepath(base)
 
     # -------------------- 搜索/停止 --------------------
     def on_search_or_stop(self):
@@ -2351,6 +3167,11 @@ class MusicdlGUI(QWidget):
 
     # -------------------- 窗口关闭事件 --------------------
     def closeEvent(self, event):
+        if hasattr(self, '_vis_download_thread') and self._vis_download_thread is not None:
+            if self._vis_download_thread.isRunning():
+                self._vis_download_thread.stop()
+                self._vis_download_thread.wait()
+            self._vis_download_thread = None
         if self.search_thread and self.search_thread.isRunning():
             try:
                 self.search_thread.stop()
