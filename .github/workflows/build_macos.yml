@@ -18,11 +18,9 @@ jobs:
 
     - name: Install VLC and FFmpeg
       run: |
-        # 安装 VLC（Cask 方式）和 FFmpeg（普通 formula）
         brew install --cask vlc
         brew install ffmpeg
 
-        # 验证 VLC 安装（使用绝对路径）
         VLC_LIB="/Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib"
         if [ -f "$VLC_LIB" ]; then
           echo "VLC installed successfully: $VLC_LIB"
@@ -31,7 +29,6 @@ jobs:
           exit 1
         fi
 
-        # 验证 FFmpeg 安装
         FFMPEG_BIN="$(brew --prefix ffmpeg)/bin/ffmpeg"
         if [ -f "$FFMPEG_BIN" ]; then
           echo "FFmpeg installed at: $FFMPEG_BIN"
@@ -43,8 +40,9 @@ jobs:
     - name: Clean previous builds
       run: |
         rm -rf dist build
-        # 删除可能残留的 .spec 缓存（可选）
-        rm -rf *.spec
+        # 注意：不要删除 *.spec 文件，保留源码中的 spec 文件
+        # 如果之前生成过临时的 spec 文件，只删除这些临时文件（如果有的话）
+        # 但为了保险，我们只删除 dist 和 build
 
     - name: Install Python dependencies
       run: |
@@ -54,7 +52,6 @@ jobs:
 
     - name: Build macOS app with PyInstaller
       env:
-        # 显式传递 VLC 路径（使用实际库目录）和 FFmpeg 前缀给 .spec
         VLC_PREFIX: /Applications/VLC.app/Contents/MacOS
         FFMPEG_PREFIX: $(brew --prefix ffmpeg)
       run: |
@@ -66,9 +63,7 @@ jobs:
       run: |
         mkdir -p dmg_staging
         cp -R "dist/${APP_NAME}.app" dmg_staging/
-        # 创建 Applications 快捷方式，方便拖拽安装
         ln -s /Applications dmg_staging/Applications
-        # 生成 DMG（压缩只读格式）
         hdiutil create -volname "${APP_NAME}" -srcfolder dmg_staging -ov -format UDZO "dist/${APP_NAME}.dmg"
 
     - name: Upload DMG artifact
