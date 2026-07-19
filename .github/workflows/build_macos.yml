@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest   # 使用 GitHub 提供的 macOS 最新版虚拟机
+    runs-on: macos-latest
 
     steps:
     - name: Checkout code
@@ -14,39 +14,34 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.13.14'   # 选择 Python 版本（3.9~3.11 均可）
+        python-version: '3.10'   # 稳定版本
 
-    - name: Install system dependencies
+    - name: Install system dependencies (VLC)
       run: |
-        # 安装 PyQt5 所需的系统库和 VLC（播放时需要）
-        brew install qt5 vlc
+        brew install vlc
 
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        # 额外安装打包工具
         pip install pyinstaller
 
-    - name: Build with PyInstaller
+    - name: Build with PyInstaller using spec
       run: |
-        pyinstaller --windowed --name "Music-spd-tool_macos-arm64" --icon icon.icns musicdlgui.py
-    
+        # 获取 VLC 安装前缀，传递给 spec 文件
+        export VLC_PREFIX=$(brew --prefix vlc)
+        # 构建
+        pyinstaller musicdlgui.spec
+
     - name: Create DMG
       run: |
-        # 1. 创建一个临时文件夹，用于存放即将打包进 DMG 的 .app
         mkdir -p dmg_staging
         cp -R "dist/Music-spd-tool_macos-arm64.app" dmg_staging/
-        
-        # 2. 使用 hdiutil 创建压缩的只读 DMG
-        # -volname: 挂载时显示的名称
-        # -srcfolder: 源文件夹
-        # -ov: 覆盖已有文件
-        # -format UDZO: 压缩的只读格式（标准分发格式）
+        ln -s /Applications dmg_staging/Applications
         hdiutil create -volname "Music-spd-tool_macos-arm64" -srcfolder dmg_staging -ov -format UDZO "dist/Music-spd-tool_macos-arm64.dmg"
-    
-    - name: Upload artifact (now upload the .dmg file!)
+
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: MusicDownloader-macOS
-        path: dist/Music-spd-tool_macos-arm64.dmg   # 重点：这里改成了 .dmg 文件！
+        path: dist/Music-spd-tool_macos-arm64.dmg
