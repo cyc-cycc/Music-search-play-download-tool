@@ -16,15 +16,23 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install VLC
+    - name: Install VLC and FFmpeg
       run: |
+        # 安装 VLC（Cask 方式）和 FFmpeg（普通 formula）
         brew install --cask vlc
-        # 验证路径
-        ls -la /Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib
-        ls -la /Applications/VLC.app/Contents/MacOS/plugins/
+        brew install ffmpeg
+
+        # 验证安装并打印路径（便于调试）
+        echo "VLC installed at: $(brew --prefix vlc)"
+        echo "FFmpeg installed at: $(brew --prefix ffmpeg)"
+        ls -la $(brew --prefix vlc)/lib/libvlc.dylib
+        ls -la $(brew --prefix ffmpeg)/bin/ffmpeg
 
     - name: Clean previous builds
-      run: rm -rf dist build
+      run: |
+        rm -rf dist build
+        # 删除可能残留的 .spec 缓存
+        rm -rf *.spec
 
     - name: Install Python dependencies
       run: |
@@ -32,21 +40,28 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
-    - name: Build app
+    - name: Build macOS app with PyInstaller
+      env:
+        # 显式传递 VLC 和 FFmpeg 前缀给 .spec（.spec 会读取这些环境变量）
+        VLC_PREFIX: $(brew --prefix vlc)
+        FFMPEG_PREFIX: $(brew --prefix ffmpeg)
       run: |
         pyinstaller --clean musicdlgui.spec
 
-    - name: Create DMG
-      run: |
-        mkdir -p dmg_staging
-        cp -R "dist/${{ env.APP_NAME }}.app" dmg_staging/
-        ln -s /Applications dmg_staging/Applications
-        hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder dmg_staging -ov -format UDZO "dist/${{ env.APP_NAME }}.dmg"
+    - name: Create DMG installer
       env:
         APP_NAME: Music-spd-tool_macos-arm64
+      run: |
+        mkdir -p dmg_staging
+        cp -R "dist/${APP_NAME}.app" dmg_staging/
+        # 创建 Applications 快捷方式，方便拖拽安装
+        ln -s /Applications dmg_staging/Applications
+        # 生成 DMG（压缩只读格式）
+        hdiutil create -volname "${APP_NAME}" -srcfolder dmg_staging -ov -format UDZO "dist/${APP_NAME}.dmg"
 
-    - name: Upload DMG
+    - name: Upload DMG artifact
       uses: actions/upload-artifact@v4
       with:
         name: MusicDownloader-macOS
         path: dist/Music-spd-tool_macos-arm64.dmg
+        if-no-files-found: error
