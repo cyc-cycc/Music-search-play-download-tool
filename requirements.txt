@@ -1,0 +1,6 @@
+PyQt5
+sounddevice
+librosa
+numpy
+matplotlib
+pyinstaller
