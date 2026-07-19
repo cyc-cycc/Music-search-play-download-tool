@@ -16,12 +16,12 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install VLC via cask
+    - name: Install VLC
       run: |
         brew install --cask vlc
-        # （可选）打印 VLC 目录结构，方便调试
-        ls -la /Applications/VLC.app/Contents/MacOS/
-        ls -la /Applications/VLC.app/Contents/ || true
+        # 验证路径
+        ls -la /Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib
+        ls -la /Applications/VLC.app/Contents/MacOS/plugins/
 
     - name: Install Python dependencies
       run: |
@@ -29,9 +29,9 @@ jobs:
         pip install -r requirements.txt
         pip install pyinstaller
 
-    - name: Build with PyInstaller
+    - name: Build app
       run: |
-        pyinstaller musicdlgui.spec
+        pyinstaller --clean musicdlgui.spec
 
     - name: Create DMG
       run: |
@@ -40,7 +40,7 @@ jobs:
         ln -s /Applications dmg_staging/Applications
         hdiutil create -volname "Music-spd-tool_macos-arm64" -srcfolder dmg_staging -ov -format UDZO "dist/Music-spd-tool_macos-arm64.dmg"
 
-    - name: Upload artifact
+    - name: Upload DMG
       uses: actions/upload-artifact@v4
       with:
         name: MusicDownloader-macOS
