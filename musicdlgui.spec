@@ -2,31 +2,73 @@
 
 import os
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-# ---------- 配置 ----------
 APP_NAME = 'Music-spd-tool_macos-arm64'
-ICON_PATH = 'icon.icns'  # 请确保图标文件存在
+ICON_PATH = 'icon.icns'
 
-# VLC 相关路径（通过 brew 获取，若在 GitHub Actions 中可环境变量传入）
-# 建议在构建前通过 `export VLC_PREFIX=$(brew --prefix vlc)` 传入
-VLC_PREFIX = os.environ.get('VLC_PREFIX', '/usr/local/opt/vlc')
-if not os.path.exists(VLC_PREFIX):
-    # 如果路径不存在，尝试默认 Homebrew 路径
-    VLC_PREFIX = '/usr/local/opt/vlc'
+# ----- 自动检测 VLC 安装路径 -----
+def find_vlc_prefix():
+    # 优先从环境变量获取
+    prefix = os.environ.get('VLC_PREFIX')
+    if prefix and os.path.exists(prefix):
+        return prefix
 
-# ---------- 分析对象 ----------
+    # 检查常见的安装位置
+    candidates = [
+        '/Applications/VLC.app/Contents/MacOS',   # Cask 安装
+        '/usr/local/opt/vlc',                    # Homebrew 核心（可能已废弃）
+        '/usr/local/opt/vlc/lib',                # 如果是 Homebrew 的 lib 目录
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            # 如果是 /usr/local/opt/vlc，则 lib 在下面，需要调整
+            if cand.endswith('/vlc'):
+                # 检查 lib 子目录是否存在
+                libdir = os.path.join(cand, 'lib')
+                if os.path.exists(libdir):
+                    return libdir
+            else:
+                # 直接检查有没有 libvlc.dylib
+                if os.path.exists(os.path.join(cand, 'libvlc.dylib')):
+                    return cand
+                # 检查 lib 子目录
+                libdir = os.path.join(cand, 'lib')
+                if os.path.exists(os.path.join(libdir, 'libvlc.dylib')):
+                    return libdir
+    raise RuntimeError('VLC not found. Please install VLC and set VLC_PREFIX environment variable.')
+
+VLC_PREFIX = find_vlc_prefix()
+print(f'Using VLC from: {VLC_PREFIX}')
+
+# VLC 文件位置
+libvlc = os.path.join(VLC_PREFIX, 'libvlc.dylib')
+libvlccore = os.path.join(VLC_PREFIX, 'libvlccore.dylib')
+plugins = os.path.join(VLC_PREFIX, 'plugins')
+
+# 如果上面路径不存在，尝试在 VLC_PREFIX 下查找
+if not os.path.exists(libvlc):
+    # 可能库在 VLC_PREFIX/ 而不是 VLC_PREFIX/lib/
+    libvlc = os.path.join(os.path.dirname(VLC_PREFIX), 'libvlc.dylib')
+    libvlccore = os.path.join(os.path.dirname(VLC_PREFIX), 'libvlccore.dylib')
+    plugins = os.path.join(os.path.dirname(VLC_PREFIX), 'plugins')
+    if not os.path.exists(libvlc) or not os.path.exists(libvlccore) or not os.path.isdir(plugins):
+        raise RuntimeError(f'VLC files not found in {VLC_PREFIX}')
+
+# 打印确认
+print(f'libvlc: {libvlc}, plugins: {plugins}')
+
+# ----- 分析 -----
 a = Analysis(
     ['musicdlgui.py'],
     pathex=[],
     binaries=[],
     datas=[
-        # 将 VLC 库和插件整体作为数据目录复制到 app 内部的 vlc/ 子目录
-        (os.path.join(VLC_PREFIX, 'lib'), 'vlc/lib'),
-        (os.path.join(VLC_PREFIX, 'plugins'), 'vlc/plugins'),
+        (libvlc, 'vlc'),
+        (libvlccore, 'vlc'),
+        (plugins, 'vlc/plugins'),
     ],
     hiddenimports=[
-        # 必要隐藏导入（涵盖你的依赖）
         'matplotlib.backends.backend_qt5agg',
         'numba',
         'sklearn.utils._cython_blas',
@@ -51,7 +93,6 @@ a = Analysis(
     noarchive=False,
 )
 
-# ---------- 可执行文件 ----------
 pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 
 exe = EXE(
@@ -68,7 +109,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,   # 不显示终端窗口
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -77,7 +118,6 @@ exe = EXE(
     icon=ICON_PATH,
 )
 
-# ---------- macOS 应用包 ----------
 coll = COLLECT(
     exe,
     a.binaries,
