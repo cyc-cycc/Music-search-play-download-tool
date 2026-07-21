@@ -16,10 +16,10 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install VLC and FFmpeg
+    - name: Install VLC, FFmpeg and PortAudio
       run: |
         brew install --cask vlc
-        brew install ffmpeg
+        brew install ffmpeg portaudio
 
         VLC_LIB="/Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib"
         if [ -f "$VLC_LIB" ]; then
@@ -37,12 +37,17 @@ jobs:
           exit 1
         fi
 
+        PORTAUDIO_LIB="$(brew --prefix portaudio)/lib/libportaudio.dylib"
+        if [ -f "$PORTAUDIO_LIB" ]; then
+          echo "PortAudio installed at: $PORTAUDIO_LIB"
+        else
+          echo "PortAudio not found!"
+          exit 1
+        fi
+
     - name: Clean previous builds
       run: |
         rm -rf dist build
-        # 注意：不要删除 *.spec 文件，保留源码中的 spec 文件
-        # 如果之前生成过临时的 spec 文件，只删除这些临时文件（如果有的话）
-        # 但为了保险，我们只删除 dist 和 build
 
     - name: Install Python dependencies
       run: |
@@ -51,9 +56,6 @@ jobs:
         pip install pyinstaller
 
     - name: Build macOS app with PyInstaller
-      env:
-        VLC_PREFIX: /Applications/VLC.app/Contents/MacOS
-        FFMPEG_PREFIX: $(brew --prefix ffmpeg)
       run: |
         pyinstaller --clean musicdlgui.spec
 
