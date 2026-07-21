@@ -57,11 +57,11 @@ jobs:
 
     - name: Build macOS app with PyInstaller
       run: |
-        pyinstaller --clean musicdlgui.spec
+        pyinstaller --clean cYy-Music-Client.spec
 
     - name: Create DMG installer
       env:
-        APP_NAME: Music-spd-tool_macos-arm64
+        APP_NAME: cYy-Music-Client_macos-arm64
       run: |
         mkdir -p dmg_staging
         cp -R "dist/${APP_NAME}.app" dmg_staging/
@@ -71,6 +71,6 @@ jobs:
     - name: Upload DMG artifact
       uses: actions/upload-artifact@v4
       with:
-        name: MusicDownloader-macOS
-        path: dist/Music-spd-tool_macos-arm64.dmg
+        name: cYy-Music-Client-macOS
+        path: dist/cYy-Music-Client_macos-arm64.dmg
         if-no-files-found: error
