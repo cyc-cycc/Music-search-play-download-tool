@@ -45,6 +45,15 @@ ffmpeg_lib = os.path.join(FFMPEG_PREFIX, 'lib')
 if not os.path.exists(os.path.join(ffmpeg_bin, 'ffmpeg')):
     raise RuntimeError('ffmpeg executable not found.')
 
+# ----- 构建 datas -----
+datas = [
+    (libvlc, 'vlc'),
+    (libvlccore, 'vlc'),
+    (VLC_PLUGINS_DIR, 'vlc/plugins'),
+    (ffmpeg_bin, 'ffmpeg/bin'),
+    (ffmpeg_lib, 'ffmpeg/lib'),
+]
+
 # ----- 查找 portaudio -----
 PORT_AUDIO_LIB = None
 for p in ['/usr/local/lib/libportaudio.dylib', '/opt/homebrew/lib/libportaudio.dylib']:
@@ -55,15 +64,6 @@ if PORT_AUDIO_LIB:
     datas.append((PORT_AUDIO_LIB, 'ffmpeg/lib'))
 else:
     print("Warning: libportaudio.dylib not found, sounddevice may fail.")
-
-# ----- 构建 datas -----
-datas = [
-    (libvlc, 'vlc'),
-    (libvlccore, 'vlc'),
-    (VLC_PLUGINS_DIR, 'vlc/plugins'),
-    (ffmpeg_bin, 'ffmpeg/bin'),
-    (ffmpeg_lib, 'ffmpeg/lib'),
-]
 
 # ----- 分析 -----
 a = Analysis(
