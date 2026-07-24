@@ -78,16 +78,15 @@ jobs:
 
     - name: Build with Nuitka
       run: |
-        # 将 resources 打包进 app，使用 --include-data-dir
-        # 注意：Nuitka 会将资源放在 app 内的当前工作目录？需要指定存放位置
-        # 我们可以在代码中通过 _MEIPASS 类似机制？但 Nuitka 没有内置，最好设置环境变量或固定路径。
-        # 这里我们采用 --include-data-dir 将资源打包到 app 内部，并在代码中通过 sys._MEIPASS 或 __file__ 定位？
-        # 实际上 Nuitka 的 standalone 模式会将资源放在 app 包内的 {app_name}.dist 目录，我们可以通过 os.path.dirname(sys.executable) 定位。
-        # 我们将资源放在 app 内的 resources 目录。
         nuitka --standalone \
                --macos-create-app-bundle \
                --enable-plugin=pyqt5 \
                --include-qt-plugins=platforms,imageformats \
+               --macos-app-name="cYy Music Client" \
+               --macos-app-version="4.2.0" \
+               --macos-app-icon=icon.icns \
+               --macos-app-bundle-id=com.yourcompany.musicdlgui \
+               --macos-target-arm64 \
                --include-module=matplotlib.backends.backend_qt5agg \
                --include-module=numba \
                --include-module=sklearn.utils._cython_blas \
@@ -104,12 +103,6 @@ jobs:
                --include-module=PyQt5.sip \
                --include-data-dir=resources=resources \
                --output-dir=dist \
-               --app-name="cYy Music Client" \
-               --app-version="4.2.0" \
-               --app-icon=icon.icns \
-               --app-bundle-id=com.yourcompany.musicdlgui \
-               --macos-app-protected=0 \
-               --macos-target-arm64 \
                main.py
 
     - name: Create DMG installer
