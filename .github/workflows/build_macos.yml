@@ -1,7 +1,7 @@
 name: Build macOS App
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:         # 手动触发，便于测试
 
 jobs:
   build:
@@ -52,7 +52,7 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r requirements.txt    # 请确保存在 requirements.txt，或手动列出依赖
         pip install pyinstaller
 
     - name: Build macOS app with PyInstaller
